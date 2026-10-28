@@ -1,11 +1,12 @@
 {
-  "name": "sparklend-reserve-tokens-gnosis-atq-module",
+  "name": "sparklend-debt-tokens-gnosis-atq-module",
   "version": "1.0.0",
   "type": "module",
   "main": "main.mjs",
   "license": "MIT",
   "scripts": {
-    "build": "tsc"
+    "build": "tsc",
+    "test": "node --experimental-vm-modules --test tests/module.test.mjs"
   },
   "dependencies": {
     "atq-types": "^1.1.5",

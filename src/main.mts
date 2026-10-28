@@ -8,12 +8,11 @@ const endpoint = `https://gateway.thegraph.com/api/deployments/id/${deployment}`
 // Protocol association is bound to the provider in that immutable source manifest.
 const provider = "0xa98dacb3fc964a6a0d2ce3b77294241585eaba6d";
 type Token = { id: string; name: string; symbol: string };
-type Market = { id: string; inputToken: Token; outputToken: Token | null; _vToken: Token | null; _sToken: Token | null; protocol: { id: string } };
+type Market = { id: string; inputToken: Token; outputToken: { id: string } | null; _vToken: Token | null; _sToken: Token | null; protocol: { id: string } };
 type Meta = { deployment: string; hasIndexingErrors: boolean; block: { number: number; hash: string | null } };
-const roles: { key: "outputToken" | "_vToken" | "_sToken"; label: string; note: string }[] = [
-  { key: "outputToken", label: "aToken", note: "SparkLend aToken deposit-receipt accounting token for supplied underlying assets" },
-  { key: "_vToken", label: "Variable Debt", note: "SparkLend non-transferable variable-debt accounting token for variable-rate borrowing balances and accrued interest" },
-  { key: "_sToken", label: "Stable Debt", note: "SparkLend historical non-transferable stable-debt accounting token for legacy stable-rate debt bookkeeping; not a stablecoin" },
+const roles: { key: "_vToken" | "_sToken"; label: string; note: string }[] = [
+  { key: "_vToken", label: "Variable Debt", note: "SparkLend non-transferable ERC-20 variable-debt accounting token for variable-rate borrowing balances and accrued interest" },
+  { key: "_sToken", label: "Stable Debt", note: "SparkLend historical non-transferable ERC-20 stable-debt accounting token for legacy stable-rate debt bookkeeping; not a stablecoin" },
 ];
 function address(value: string): string {
   if (typeof value !== "string" || !/^0x[0-9a-f]{40}$/i.test(value) || /^0x0{40}$/i.test(value)) throw new Error("Invalid token or provider address");
@@ -48,12 +47,12 @@ const service: ITagService = {
     if (typeof apiKey !== "string" || !apiKey.trim()) throw new Error("A Graph API key is required");
     const initial = meta((await query("{ _meta { deployment hasIndexingErrors block { number hash } } }", apiKey))._meta);
     const atBlock = `block: { hash: ${JSON.stringify(initial.block.hash)} }`;
-    const tags: ContractTag[] = [], seen = new Set<string>(), labels = new Set<string>();
+    const tags: ContractTag[] = [], seen = new Set<string>();
     // Address-valued Bytes IDs have no unique sequential field. Use an ID cursor.
     let cursor = "0x";
     for (;;) {
       const d = await query(`{ _meta(${atBlock}) { deployment hasIndexingErrors block { number hash } }
-        markets(first: 1000, orderBy: id, orderDirection: asc, where: { id_gt: ${JSON.stringify(cursor)} }, ${atBlock}) { id protocol { id } inputToken { id name symbol } outputToken { id name symbol } _vToken { id name symbol } _sToken { id name symbol } } }`, apiKey);
+        markets(first: 1000, orderBy: id, orderDirection: asc, where: { id_gt: ${JSON.stringify(cursor)} }, ${atBlock}) { id protocol { id } inputToken { id name symbol } outputToken { id } _vToken { id name symbol } _sToken { id name symbol } } }`, apiKey);
       meta(d._meta, initial);
       const rows = d.markets;
       if (!Array.isArray(rows) || rows.length > 1000) throw new Error("Invalid source page");
@@ -61,20 +60,19 @@ const service: ITagService = {
         if (typeof market.id !== "string" || market.id <= cursor) throw new Error("Cursor did not advance");
         cursor = market.id;
         if (address(market.protocol?.id) !== provider) throw new Error("Unexpected protocol provider");
-        // A market without a positively identified receipt token is not an eligible reserve.
-        if (!market.outputToken) continue;
+        // A missing reserve identity is unknown, not permission to omit its debt roles.
+        if (!market.outputToken) throw new Error("Missing reserve identity");
         if (address(market.outputToken.id) !== address(market.id)) throw new Error("Market and receipt identity differ");
         const asset = address(market.inputToken?.id), assetSymbol = plain(market.inputToken?.symbol);
         for (const role of roles) {
           const token = market[role.key];
+          // Null or zero means no deployed contract for this debt mode.
           if (!token || /^0x0{40}$/i.test(token.id)) continue;
           const contract = address(token.id), tokenName = plain(token.name), tokenSymbol = plain(token.symbol);
           if (contract === asset || seen.has(contract)) throw new Error("Underlying asset or repeated accounting contract");
           seen.add(contract);
-          const label = `SparkLend ${assetSymbol.slice(0, 10)} ${role.label} (${contract.slice(2, 12)})`;
-          if (labels.has(label)) throw new Error("Ambiguous tag label");
-          labels.add(label);
-          tags.push({ "Contract Address": `eip155:100:${contract}`, "Public Name Tag": label, "Project Name": "Spark", "UI/Website Link": "https://spark.finance", "Public Note": `${role.note} on Gnosis. Underlying symbol: ${assetSymbol}. Indexed name: ${tokenName}; symbol: ${tokenSymbol}. Includes historical and zero-supply roles; no claim of outstanding balances or enabled deposits/borrowing.` });
+          const label = tokenName.length > 50 ? tokenName.slice(0, 47) + "..." : tokenName;
+          tags.push({ "Contract Address": `eip155:100:${contract}`, "Public Name Tag": label, "Project Name": "Spark", "UI/Website Link": "https://spark.finance", "Public Note": `${role.note} on Gnosis. Underlying symbol: ${assetSymbol}. Symbol: ${tokenSymbol}. Includes historical and zero-supply roles; no claim of outstanding balances or enabled deposits/borrowing.` });
         }
       }
       if (rows.length < 1000) break;
